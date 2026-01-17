@@ -1,15 +1,21 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:flutter/foundation.dart';
+import 'package:qr_code_scanner/qr_code_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+
+// Put Supabase credentials in top-level constants so REST calls can use them.
+const kSupabaseUrl = 'https://jydooivrdwtrhbuacbiu.supabase.co';
+const kSupabaseAnonKey = 'sb_publishable_KbHtqKjcXDWqNYAkMK0yZw_G7r1KvFd';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url: 'https://jydooivrdwtrhbuacbiu.supabase.co',
-    anonKey: 'sb_publishable_KbHtqKjcXDWqNYAkMK0yZw_G7r1KvFd',
+    url: kSupabaseUrl,
+    anonKey: kSupabaseAnonKey,
   );
 
   runApp(const MyApp());
@@ -38,7 +44,8 @@ class GateScannerPage extends StatefulWidget {
 }
 
 class _GateScannerPageState extends State<GateScannerPage> {
-  final MobileScannerController _cameraController = MobileScannerController();
+  QRViewController? _controller;
+  final GlobalKey _qrKey = GlobalKey(debugLabel: 'QR');
   final TextEditingController _inputController = TextEditingController();
   Color _bgColor = Colors.amber.shade100;
   String _statusText = '';
@@ -46,9 +53,21 @@ class _GateScannerPageState extends State<GateScannerPage> {
 
   @override
   void dispose() {
-    _cameraController.dispose();
+    _controller?.dispose();
     _inputController.dispose();
     super.dispose();
+  }
+
+  void _onQRViewCreated(QRViewController controller) {
+    _controller = controller;
+    _controller!.scannedDataStream.listen((scanData) {
+      for (Barcode barcode in scanData) {
+        if (barcode.code != null && barcode.code!.isNotEmpty) {
+          _handleOtp(barcode.code!.trim());
+          break;
+        }
+      }
+    });
   }
 
   Future<void> _handleOtp(String code) async {
@@ -56,28 +75,46 @@ class _GateScannerPageState extends State<GateScannerPage> {
     _processing = true;
 
     try {
-      final client = Supabase.instance.client;
+      final encodedCode = Uri.encodeComponent(code);
 
-      final response = await client
-          .from('otps')
-          .select()
-          .eq('code', code)
-          .limit(1)
-          .execute();
+      final getUri = Uri.parse('$kSupabaseUrl/rest/v1/payments?select=*&otp=eq.$encodedCode&limit=1');
+      final headers = {
+        'apikey': kSupabaseAnonKey,
+        'Authorization': 'Bearer $kSupabaseAnonKey',
+        'Accept': 'application/json',
+      };
 
-      final data = response.data as List?;
-
-      if (data != null && data.isNotEmpty) {
-        // OTP exists — delete it
-        await client.from('otps').delete().eq('code', code).execute();
-        setState(() {
-          _bgColor = Colors.green;
-          _statusText = 'Gate open';
-        });
+      final getResp = await http.get(getUri, headers: headers);
+      if (getResp.statusCode == 200) {
+        final body = getResp.body;
+        final exists = body.trim().startsWith('[') && body.trim() != '[]';
+        if (exists) {
+          final deleteUri = Uri.parse('$kSupabaseUrl/rest/v1/payments?otp=eq.$encodedCode');
+          final delResp = await http.delete(deleteUri, headers: {
+            ...headers,
+            'Prefer': 'return=minimal',
+          });
+          if (delResp.statusCode == 204 || delResp.statusCode == 200) {
+            setState(() {
+              _bgColor = Colors.green;
+              _statusText = 'Gate open';
+            });
+          } else {
+            setState(() {
+              _bgColor = Colors.red;
+              _statusText = "Gate can't open";
+            });
+          }
+        } else {
+          setState(() {
+            _bgColor = Colors.red;
+            _statusText = "Gate can't open";
+          });
+        }
       } else {
         setState(() {
           _bgColor = Colors.red;
-          _statusText = "Gate can't open";
+          _statusText = 'Error: ${getResp.statusCode}';
         });
       }
     } catch (e) {
@@ -86,7 +123,6 @@ class _GateScannerPageState extends State<GateScannerPage> {
         _statusText = 'Error: ${e.toString()}';
       });
     } finally {
-      // Keep color for 2 seconds then revert
       Timer(const Duration(seconds: 2), () {
         setState(() {
           _bgColor = Colors.amber.shade100;
@@ -97,16 +133,6 @@ class _GateScannerPageState extends State<GateScannerPage> {
     }
   }
 
-  void _onDetect(BarcodeCapture capture) {
-    if (_processing) return;
-    for (final b in capture.barcodes) {
-      final value = b.rawValue;
-      if (value != null && value.isNotEmpty) {
-        _handleOtp(value.trim());
-        break;
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -116,7 +142,7 @@ class _GateScannerPageState extends State<GateScannerPage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.flip_camera_ios),
-            onPressed: () => _cameraController.switchCamera(),
+            onPressed: () => _controller?.flipCamera(),
           ),
         ],
       ),
@@ -128,10 +154,9 @@ class _GateScannerPageState extends State<GateScannerPage> {
             Expanded(
               child: Stack(
                 children: [
-                  MobileScanner(
-                    controller: _cameraController,
-                    allowDuplicates: false,
-                    onDetect: _onDetect,
+                  QRView(
+                    key: _qrKey,
+                    onQRViewCreated: _onQRViewCreated,
                   ),
                   Align(
                     alignment: Alignment.topCenter,
@@ -146,13 +171,8 @@ class _GateScannerPageState extends State<GateScannerPage> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        _statusText.isEmpty
-                            ? 'Scan QR or enter OTP'
-                            : _statusText,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                        ),
+                        _statusText.isEmpty ? 'Scan QR or enter OTP' : _statusText,
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
                       ),
                     ),
                   ),
