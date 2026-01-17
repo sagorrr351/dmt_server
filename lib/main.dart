@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 
@@ -44,8 +44,7 @@ class GateScannerPage extends StatefulWidget {
 }
 
 class _GateScannerPageState extends State<GateScannerPage> {
-  QRViewController? _controller;
-  final GlobalKey _qrKey = GlobalKey(debugLabel: 'QR');
+  final MobileScannerController _cameraController = MobileScannerController();
   final TextEditingController _inputController = TextEditingController();
   Color _bgColor = Colors.amber.shade100;
   String _statusText = '';
@@ -53,21 +52,20 @@ class _GateScannerPageState extends State<GateScannerPage> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    _cameraController.dispose();
     _inputController.dispose();
     super.dispose();
   }
 
-  void _onQRViewCreated(QRViewController controller) {
-    _controller = controller;
-    _controller!.scannedDataStream.listen((scanData) {
-      for (Barcode barcode in scanData) {
-        if (barcode.code != null && barcode.code!.isNotEmpty) {
-          _handleOtp(barcode.code!.trim());
-          break;
-        }
+  void _onDetect(BarcodeCapture capture) {
+    if (_processing) return;
+    for (final b in capture.barcodes) {
+      final value = b.rawValue;
+      if (value != null && value.isNotEmpty) {
+        _handleOtp(value.trim());
+        break;
       }
-    });
+    }
   }
 
   Future<void> _handleOtp(String code) async {
@@ -142,7 +140,7 @@ class _GateScannerPageState extends State<GateScannerPage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.flip_camera_ios),
-            onPressed: () => _controller?.flipCamera(),
+            onPressed: () => _cameraController.switchCamera(),
           ),
         ],
       ),
@@ -152,32 +150,40 @@ class _GateScannerPageState extends State<GateScannerPage> {
         child: Column(
           children: [
             Expanded(
-              child: Stack(
-                children: [
-                  QRView(
-                    key: _qrKey,
-                    onQRViewCreated: _onQRViewCreated,
-                  ),
-                  Align(
-                    alignment: Alignment.topCenter,
-                    child: Container(
-                      margin: const EdgeInsets.only(top: 12),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.4),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+              child: kIsWeb
+                  ? Center(
                       child: Text(
-                        _statusText.isEmpty ? 'Scan QR or enter OTP' : _statusText,
-                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                        'QR scanning is only available on mobile devices. Please use manual OTP input below.',
+                        style: const TextStyle(fontSize: 18),
+                        textAlign: TextAlign.center,
                       ),
+                    )
+                  : Stack(
+                      children: [
+                        MobileScanner(
+                          controller: _cameraController,
+                          onDetect: _onDetect,
+                        ),
+                        Align(
+                          alignment: Alignment.topCenter,
+                          child: Container(
+                            margin: const EdgeInsets.only(top: 12),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.4),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              _statusText.isEmpty ? 'Scan QR or enter OTP' : _statusText,
+                              style: const TextStyle(color: Colors.white, fontSize: 16),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
             Padding(
               padding: const EdgeInsets.all(12.0),
